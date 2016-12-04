@@ -1,0 +1,53 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - smc-vault.yml
+    - "{{ project_definition }}"
+  
+  tasks: 
+       
+    - name: Create the tenant networks
+      os_network:
+        auth:
+          auth_url: "{{ os_auth_url }}"
+          username: "{{ os_username }}"
+          password: "{{ os_password }}"
+          project_name: "{{ os_project_name }}"
+        state: present
+        shared: false
+        name: "{{ item.name }}"
+        external: false
+      register: tenant_network
+      with_items: "{{ subnet_data | default([]) }}"      
+        
+    - name: Create the tenant subnets
+      os_subnet:
+        auth:
+          auth_url: "{{ os_auth_url }}"
+          username: "{{ os_username }}"
+          password: "{{ os_password }}"
+          project_name: "{{ os_project_name }}"
+        state: present
+        network_name: "{{ item.name }}"
+        name: "{{ item.name }}"
+        cidr: "{{ item.cidr }}"
+        dns_nameservers: "{{ item.dns_server_list | default([]) }}"
+      register: tenant_subnet
+      with_items: "{{ subnet_data | default([]) }}"
+      
+    - name: Create the tenant routers
+      os_router:
+        auth:
+          auth_url: "{{ os_auth_url }}"
+          username: "{{ os_username }}"
+          password: "{{ os_password }}"
+          project_name: "{{ os_project_name }}"
+        state: present
+        name: "{{ item.name }}"
+        network: "{{ item.external_network | default(omit) }}"
+        interfaces: "{{ item.interfaces | default(omit) }}"
+      register: tenant_router
+      with_items: "{{ router_data | default([]) }}"      
+

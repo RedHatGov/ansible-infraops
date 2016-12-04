@@ -1,0 +1,37 @@
+---
+- name: Setting groups for {{ user }}
+  set_fact:
+    user_groups:  "{{ users_dict.groups|default([]) + [users_dict.primary_group] }}"
+
+- name: Setting state for {{ user }}
+  set_fact:
+    user_state: "{{ 'absent' if (users_dict.state|default('') == 'absent') or not user_groups|intersect(host_login_groups) else 'present' }}"
+    
+- name: Adding/Deleting {{ user }}
+  user:
+    name: "{{ user }}"
+    comment: "{{ users_dict.name }}"
+    uid: "{{ users_dict.uid }}"
+    group: "{{ users_dict.primary_group | default('users') }}"
+    groups: "{{ users_dict.groups | default([]) | join(',') }}"
+    state: "{{ user_state }}"
+
+#    - name: Deleting users that are not allowed on this host
+#      user:
+#        name: "{{ user }}"
+#        comment: "{{ users_dict.name }}"
+#        uid: "{{ users_dict.uid }}"
+#        group: "{{ users_dict.primary_group | default('users') }}"
+#        groups: "{{ users_dict.groups | default([]) | join(',') }}"
+#        state: absent
+#      with_users: "{{ users_dict.keys() }}"
+#      when: users_dict.groups|default([]) | intersect(host_login_groups) | length == 0
+            
+- authorized_key:
+    user: "{{ user }}"
+    key: "{{ users_dict.ssh_key }}"
+  when: user_state == "present"
+
+
+
+

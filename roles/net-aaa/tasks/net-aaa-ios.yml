@@ -1,0 +1,17 @@
+---
+- name: Configure SSH settings IOS Device
+  ios_config:
+    lines:
+      - "ip ssh time-out {{ ssh_timeout | default('120') }}"
+      - "ip ssh authentication-retries {{ ssh_retries | default('3') }}"
+      - "ip ssh version 2"
+      - service password-encryption
+    provider: "{{ netops_provider }}"
+
+- name: Adding Trusted Networks to admin-access ACL
+  ios_config:
+    lines:
+      - "permit {{ item | ipaddr('network') }} {{ item | ipaddr('hostmask') }}"
+    parents: ip access-list standard admin-access
+    provider: "{{ netops_provider }}"
+  with_items: "{{ admin_access_list | default([]) }}"

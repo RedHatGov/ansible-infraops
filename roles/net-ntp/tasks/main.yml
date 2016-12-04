@@ -1,0 +1,2 @@
+---
+- include: "net-ntp-{{ net_os }}.yml"

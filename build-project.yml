@@ -1,0 +1,146 @@
+---
+- hosts: localhost
+  gather_facts: no
+  connection: local
+  vars_files:
+    - "{{ project_definition }}"
+
+  tasks:
+    - name: Building list of devices on which to create vlan_data.
+      set_fact:
+        port_devices: "{{ port_data|map(attribute='switch')|list|unique }}"
+      when: port_data is defined
+
+#
+# This needs to stay commented out until we figure out why adding VLANs on the spine takes
+# so long
+#
+#    - set_fact:
+#        svi_devices: "{{ svi_data|map(attribute='switch')|list|unique }}"
+#      when: svi_data is defined
+
+    - set_fact:
+        vlan_devices: "{{ ( port_devices | default([]) ) + ( svi_devices | default([]) ) }}"
+      
+    - name: Creating vlans
+      nxos_vlan:
+        host: "{{ item[0] }}"
+        transport: cli
+        vlan_id: "{{ item[1].id }}"
+        state:   "{{ item[1].state | default('present') }}"
+        admin_state: "{{ item[1].admin | default('up') }}"
+        name:    "{{ item[1].name }}"
+      with_nested:
+        - "{{ vlan_devices | default([]) }}"
+        - "{{ vlan_data | default([]) }}"
+
+    - name: Create the SVI interfaces
+      nxos_interface:
+        host: "{{ item.switch }}"
+        transport: cli
+        interface: "vlan{{ item.id }}"
+        admin_state: up
+      with_items: "{{ svi_data | default([]) }}"
+        
+    - name: Create the VRF
+      nxos_vrf:
+        host: "{{ item.switch }}"
+        transport: cli
+        vrf: "{{ item.name }}"
+      with_items: "{{ vrf_data | default([]) }}"
+      
+    - name: Put SVIs in VRFs
+      nxos_vrf_interface:
+        host: "{{ item.switch }}"
+        transport: cli
+        vrf: "{{ item.vrf }}"
+        interface: "vlan{{ item.id }}"
+      with_items: "{{ svi_data | default([]) }}"
+      
+    - name: Address the VRF interfaces
+      nxos_ip_interface:
+        host: "{{ item.switch }}"
+        transport: cli
+        interface: "vlan{{ item.id }}"
+        version: v4
+        state: present
+        addr: "{{ item.cidr | ipaddr('address') }}"
+        mask: "{{ item.cidr | ipaddr('prefix') }}"
+      with_items: "{{ svi_data | default([]) }}"
+ 
+    - name: Configure indiviual port-channel interfaces
+      nxos_interface:
+        host: "{{ item.0.switch }}"
+        transport: cli
+        interface: "{{ item.1 }}"
+        state: present
+        description: "{{ item.0.desc | default(omit) }}"
+        mode: layer2
+        admin_state: up
+      with_subelements: 
+        - "{{ port_data | default([]) }}"
+        - port_list
+        - skip_missing: yes
+    
+    - name: Create port-channels on the ToR(s)
+      nxos_portchannel:
+        host: "{{ item.switch }}"
+        transport: cli
+        group: "{{ item.interface | regex_replace('^[^0-9]+([0-9]+)$', '\\1') }}"
+        members: "{{ item.port_list }}"
+        mode: "{{ item.mode | default('active') }}"
+        state: present
+        force: true
+      with_items: "{{ port_data | default([]) }}"
+      when: item.port_list is defined
+      register: command_result
+      
+#    - debug: var=command_result
+       
+    - name: Configure the VPCs on the ToR(s)
+      nxos_vpc_interface:
+        host: "{{ item.switch }}"
+        transport: cli
+        portchannel: "{{ item.interface | regex_replace('^[^0-9]+([0-9]+)$', '\\1') }}"
+        vpc: "{{ item.vpc }}"
+      with_items: "{{ port_data | default([]) }}"
+      when: item.vpc is defined
+
+    - name: Configure the port-channel interface
+      nxos_interface:
+        host: "{{ item.switch }}"
+        transport: cli
+        interface: "{{ item.interface }}"
+        state: present
+        description: "{{ item.desc | default(omit) }}"
+        mode: layer2
+      with_items: "{{ port_data | default([]) }}"
+      
+    - name: Configure the switchport(s)
+      nxos_switchport:
+        host: "{{ item.switch }}"
+        transport: cli
+        interface: "{{ item.interface }}"
+        mode: "{{ port_profiles[item.port_profile].mode }}"
+        access_vlan: "{{ port_profiles[item.port_profile].access_vlan | default(omit) }}"
+        trunk_allowed_vlan_data: "{{ port_profiles[item.port_profile].trunk_allowed_vlan_data | default(omit) }}"
+        native_vlan: "{{ port_profiles[item.port_profile].native_vlan | default(omit) }}"
+      with_items: "{{ port_data | default([]) }}"
+
+    - name: Add misc commands to the switchport(s)
+      nxos_config:
+        host: "{{ item.switch }}"
+        transport: cli
+        lines: "{{ port_profiles[item.port_profile].commands }}"
+        parents: "interface {{ item.interface }}"
+      with_items: "{{ port_data | default([]) }}"
+      when: item.commands is defined
+      register: command_result
+
+    - name: Configure the trunk links
+      nxos_switchport:
+        host: "{{ item.switch }}"
+        transport: cli
+        interface: "{{ item.interface }}"
+        trunk_vlans: "{{ item.vlan_list }}"
+      with_items: "{{ trunk_data | default([]) }}"

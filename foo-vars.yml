@@ -1,0 +1,55 @@
+---
+project_tag: foo
+tenant_nets:
+  - 192.133.157.0/24
+
+fw_outside_ip: 192.133.159.73
+fw_inside_ip: 192.133.159.137
+
+vlan_data:
+  - { id: 600, name: foo-external }
+  - { id: 601, name: foo-provider601 }
+  - { id: 602, name: foo-provider602 }
+  - { id: 603, name: foo-provider603 }
+  - { id: 604, name: foo-vrf}
+  - { id: 1002, name: foo-admin}
+  - { id: 1003, name: foo-service}
+
+vrf_data:
+  - { name: cilfu, switch: "csn-sjc18-n9k1.foolabs.net" }
+
+svis:
+  - { id: 600, cidr: 192.133.157.1/27, vrf: foo, switch: "csn-sjc18-n9k1.foolabs.net" }
+  - { id: 601, cidr: 192.133.157.33/27, vrf: foo, switch: "csn-sjc18-n9k1.foolabs.net" }
+  - { id: 602, cidr: 192.133.157.65/27, vrf: foo, switch: "csn-sjc18-n9k1.foolabs.net" }
+  - { id: 603, cidr: 192.133.157.97/27, vrf: foo, switch: "csn-sjc18-n9k1.foolabs.net" }
+  - { id: 604, cidr: 192.133.159.138/30, vrf: foo, switch: "csn-sjc18-n9k1.foolabs.net" }
+
+port_data:
+  - { desc: "mcp1.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Ethernet1/40", type: "eth", port_profile: "foo-host" }
+  - { desc: "mcp1.titan1", switch: "aa17-n9k-2.foolabs.net", interface: "Ethernet1/40", type: "eth", port_profile: "foo-host" }
+  - { desc: "mcp2.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Ethernet1/39", type: "eth", port_profile: "foo-host" }
+  - { desc: "mcp2.titan1", switch: "aa17-n9k-2.foolabs.net", interface: "Ethernet1/39", type: "eth", port_profile: "foo-host" }
+  - { desc: "mcp3.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Ethernet1/38", type: "eth", port_profile: "foo-host" }
+  - { desc: "mcp3.titan1", switch: "aa17-n9k-2.foolabs.net", interface: "Ethernet1/38", type: "eth", port_profile: "foo-host" }
+  - { desc: "mhv1.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Ethernet1/37", type: "eth", port_profile: "foo-host" }
+  - { desc: "mhv1.titan1", switch: "aa17-n9k-2.foolabs.net", interface: "Ethernet1/37", type: "eth", port_profile: "foo-host" }
+  - { desc: "mhv2.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Ethernet1/36", type: "eth", port_profile: "foo-host" }
+  - { desc: "mhv2.titan1", switch: "aa17-n9k-2.foolabs.net", interface: "Ethernet1/36", type: "eth", port_profile: "foo-host" }
+  - { desc: "mhv3.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Ethernet1/35", type: "eth", port_profile: "foo-host" }
+  - { desc: "mhv3.titan1", switch: "aa17-n9k-2.foolabs.net", interface: "Ethernet1/35", type: "eth", port_profile: "foo-host" }
+  - { desc: "asr1.titan1", switch: "aa17-n9k-1.foolabs.net", interface: "Port-channel23", port_list: ["Eth1/23","Eth1/24"], port_profile: "foo-asr" }
+
+trunk_links:
+  - { switch: aa17-n9k-1.foolabs.net, interface: Port-Channel1, vlans: "600-604" }
+  - { switch: aa17-n9k-2.foolabs.net, interface: Port-Channel1, vlans: "600-604" }
+
+port_profiles:
+  foo-asr:
+    mode: trunk
+    trunk_allowed_vlans: "600,1002-1003"
+    native_vlan: 1002
+  foo-host:
+    mode: trunk
+    trunk_allowed_vlans: "1002-1003"
+    native_vlan: 1002

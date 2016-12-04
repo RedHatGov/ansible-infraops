@@ -1,0 +1,8 @@
+---
+- set_fact:
+    os_family: linux
+- set_fact:
+    os_family: net_os
+  when: net_os is defined
+
+- include: "users-{{ os_family }}.yml"

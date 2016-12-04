@@ -1,0 +1,73 @@
+---
+- hosts: cil-gw
+  gather_facts: no
+  connection: local
+  vars_files:
+    - user_data.yml
+    - network_data.yml
+    - cil-vault.yml 
+  vars:
+    cli:
+      host: "{{ inventory_hostname }}"
+      username: "{{ cil_admin_username }}"
+      password: "{{ cil_admin_password }}"
+      transport: cli
+
+  tasks:
+# Make a list of the groups allowed to login to this host with a default
+    - set_fact: host_allowed_groups=['network_admins']
+    - set_fact: "{{ host_allowed_groups | host_data[inventory_hostname].allowed_groups }}"
+      when: host_data[inventory_hostname] is defined            
+    - debug: msg="host_allowed_groups={{ host_allowed_groups }}"
+      
+    - name: run show verion on remote devices
+      ios_command:
+        commands: show version
+        provider: "{{ cli }}"   
+
+    - name: Fold the ssh key to fit withing the IOS line length limitation
+      shell: echo {{ user_data[item].ssh_key }} | /usr/bin/fold -b -w 72
+      register: fold
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+
+    - set_fact:
+        ssh_keys: "{{ ssh_keys|default({}) | combine( {item.item: item.stdout_lines} ) }}"
+      with_items: "{{ fold.results }}"
+      when: item.changed
+
+    - name: Adding users that are allowed on this host 
+      ios_config:
+        lines:
+          - username {{ item }} privilege 15 nopassword
+        provider: "{{ cli }}"
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+
+    - name: Deleting users that are not allowed on this host
+      ios_config:
+        lines:
+          - no username {{ item }}
+        provider: "{{ cli }}"
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length == 0
+            
+    - name: Add User's ssh key
+      ios_config:
+        lines: "{{ ssh_keys[item] }}"
+        provider: "{{ cli }}"
+        parents: ['ip ssh pubkey-chain', 'username {{ item }}', 'key-string']
+        after: 'exit'
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+    
+    - debug: msg="{{ item | ipaddr('network') }} {{ item | ipaddr('hostmask') }}"
+      with_items: "{{ trusted_networks }}"
+
+    - name: Adding Trusted Networks to admin-access ACL
+      ios_config:
+        lines:
+          - permit {{ item | ipaddr('network') }} {{ item | ipaddr('hostmask') }}
+        parents: ip access-list standard admin-access
+        provider: "{{ cli }}"
+      with_items: "{{ trusted_networks }}"

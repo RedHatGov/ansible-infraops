@@ -1,0 +1,8 @@
+---
+- name: Adding Trusted Networks to admin-access ACL
+  nxos_config:
+    lines:
+      - "permit ip {{ item }} any "
+    parents: ip access-list admin-access
+    provider: "{{ netops_provider }}"
+  with_items: "{{ admin_access_list | default([]) }}"

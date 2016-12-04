@@ -1,0 +1,45 @@
+---
+ 
+- hosts: cil-spine:cil-tors
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./user_data.yml
+    - ./cil-vault.yml 
+  vars:
+    cli:
+      host: "{{ inventory_hostname }}"
+      username: "{{ cil_admin_username }}"
+      password: "{{ cil_admin_password }}"
+      transport: cli
+
+  tasks:
+# Make a list of the groups allowed to login to this host with a default
+    - set_fact: host_allowed_groups=['network_admins']
+    - set_fact: "{{ host_allowed_groups | host_data[inventory_hostname].allowed_groups }}"
+      when: host_data[inventory_hostname] is defined             
+            
+    - name: Adding users that are allowed on this host 
+      nxos_config:
+        lines:
+          - username {{ item }} role network-admin
+        provider: "{{ cli }}"
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+
+    - name: Deleting users that are not allowed on this host
+      nxos_config:
+        lines:
+          - no username {{ item }}
+        provider: "{{ cli }}"
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length == 0
+            
+    - name: Create User's SSH Keys
+      nxos_config:
+        lines:
+          - username {{ item }} sshkey {{ user_data[item].ssh_key }}
+        provider: "{{ cli }}"
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+

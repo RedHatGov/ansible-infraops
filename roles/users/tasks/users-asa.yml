@@ -1,0 +1,64 @@
+---
+- hosts: cil-fw
+  gather_facts: no
+  connection: local
+  vars_files:
+    - user_data.yml
+    - cil-vault.yml 
+  vars:
+    cli:
+      host: "{{ inventory_hostname }}"
+      username: "{{ cil_admin_username }}"
+      password: "{{ cil_admin_password }}"
+      transport: cli
+
+  tasks:
+# Make a list of the groups allowed to login to this host with a default
+    - set_fact: host_allowed_groups=['network_admins']
+    - set_fact: "{{ host_allowed_groups | host_data[inventory_hostname].allowed_groups }}"
+      when: host_data[inventory_hostname] is defined            
+    - debug: msg="host_allowed_groups={{ host_allowed_groups }}"
+      
+    - name: run show verion on remote devices
+      asa_command:
+        commands: show version
+        provider: "{{ cli }}"   
+
+    - name: Adding users that are allowed on this host 
+      asa_config:
+        lines:
+          - username {{ item }} nopassword privilege 15
+        provider: "{{ cli }}"
+        context: admin        
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+
+    - name: Deleting users that are not allowed on this host
+      asa_config:
+        lines:
+          - no username {{ item }}
+        provider: "{{ cli }}"
+        context: admin          
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length == 0
+                                       
+    - name: Add User's ssh key
+      asa_config:
+        lines: "{{ user_data[item].ssh_key }}"
+        provider: "{{ cli }}"
+        parents: ['username {{ item }} attributes', 'ssh pubkey-chain']
+        after: 'exit'
+        context: admin          
+      with_items: "{{ user_data.keys() }}"
+      when: user_data[item].groups|default([]) | intersect(host_allowed_groups) | length > 0
+    
+#    - debug: msg="{{ item | ipaddr('network') }} {{ item | ipaddr('hostmask') }}"
+#      with_items: "{{ trusted_networks }}"
+#
+#    - name: Adding Trusted Networks to admin-access ACL
+#      ios_config:
+#        lines:
+#          - permit {{ item | ipaddr('network') }} {{ item | ipaddr('hostmask') }}
+#        parents: ip access-list standard admin-access
+#        provider: "{{ cli }}"
+#      with_items: "{{ trusted_networks }}"

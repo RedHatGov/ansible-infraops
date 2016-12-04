@@ -1,0 +1,8 @@
+---
+- name: Configure NTP on NXOS Device
+  nxos_config:
+    provider: "{{ netops_provider }}"
+    lines:
+      - "ntp server {{ item }}"
+  with_items: "{{ ntp_config_server | default([]) }}"
+

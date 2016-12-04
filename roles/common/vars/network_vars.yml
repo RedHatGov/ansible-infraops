@@ -1,0 +1,20 @@
+---
+ntp_servers: ["1.us.pool.ntp.org", "2.us.pool.ntp.org", "3.us.pool.ntp.org"]
+
+vlan_data:
+  cilfu-oob:
+    id: 700
+  cilfu-admin:
+    id: 701
+  cilfu-service:
+    id: 702
+  cilfu-peering:
+    id: 703
+  cilfu-provider:
+    id: 704
+  
+trusted_networks:
+  - 128.107.0.0/16
+  - 173.36.0.0/14
+  - 64.100.0.0/14
+  - 72.163.0.0/16

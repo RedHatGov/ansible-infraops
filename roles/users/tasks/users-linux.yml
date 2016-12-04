@@ -1,0 +1,33 @@
+--- 
+
+- name: Add Groups
+  group:
+    name: "{{ item }}"
+    gid: "{{ group_dict[item].gid }}"
+    state: "{{group_dict[item].state | default('present') }}"
+  with_items: "{{ group_dict.keys() }}"  
+
+
+- name: Make a list of the groups allowed to login to this host with a default
+  set_fact: 
+    host_sudo_groups: ['system_admins']
+    host_login_groups: ['system_admins']   
+
+- name: Make a list of the groups allowed sudo on this host with a default
+  set_fact:
+    host_login_groups: "{{ host_login_groups + host_data[inventory_hostname].login_groups }}" 
+  when: host_data[inventory_hostname].login_groups is defined
+- set_fact:
+    host_sudo_groups: "{{ host_sudo_groups + host_data[inventory_hostname].sudo_groups }}"
+  when: host_data[inventory_hostname].sudo_groups is defined
+
+- name: Add groups to sudoers file
+  lineinfile: "dest=/etc/sudoers state=present regexp='^%{{ item }}' line='%{{ item }} ALL=(ALL) NOPASSWD: ALL'"
+  with_items: "{{ host_sudo_groups }}"
+
+- name: Add user
+  set_fact:
+    user_list: "{{ user_dict.keys() }}" 
+      
+- include: add-linux-user.yml user="{{ item }}" users_dict="{{ user_dict[item] }}" login_groups="{{ host_login_groups }}" sudo_groups="{{ host_sudo_groups }}"
+  with_items: "{{ user_list }}"

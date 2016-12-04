@@ -1,0 +1,21 @@
+---
+- name: Configure domain name on NXOS Device
+  nxos_config:
+    lines:
+      - "ip domain-name {{ dns_domain_name }}"
+    provider: "{{ netops_provider }}"
+  when: dns_domain_name is defined
+
+- name: Configure name servers on NXOS Device
+  nxos_config:
+    
+    lines:
+      - "ip name-server {{ ( dns_server_list | default([]) ) | join(' ') }}"
+    provider: "{{ netops_provider }}"
+    
+- name: Configure domain name lookup on NXOS Device
+  nxos_config:
+    lines:
+      - "{{ 'no ' if dns_domain_lookup == false else '' }}ip domain-lookup"
+    provider: "{{ netops_provider }}"
+

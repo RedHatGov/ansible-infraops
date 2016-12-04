@@ -1,0 +1,7 @@
+---
+- name: Configure NTP on IOS Device
+  ios_config:
+    lines:
+      - "ntp server {{ item }}"
+    provider: "{{ netops_provider }}"
+  with_items: "{{ ntp_config_server | default([]) }}"
