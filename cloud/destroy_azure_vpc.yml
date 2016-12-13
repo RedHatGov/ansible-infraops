@@ -1,0 +1,24 @@
+---
+- hosts: spokes:hosts 
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+
+    - name: Remove CSR from the host file
+      local_action: lineinfile dest=hosts regexp="{{ ansible_host }}" insertafter="\[spokes\]" state=present
+      when: cloud == 'azure'
+
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - ./cloud_vars.yml    
+  tasks:
+    - name: Destroy the resource group
+      azure_rm_resourcegroup:
+        state: absent
+        force: yes
+        name: '{{ cloud_tag }}'
+        location: '{{ cloud_info["azure"].region }}'
+  

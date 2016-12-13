@@ -1,0 +1,45 @@
+---
+- hosts: hubs:hosts 
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+    
+  tasks:
+    - name: Terminate instances that were previously launched
+      os_server:
+        state: absent
+        name: '{{ id }}'
+      when: cloud == 'openstack'
+    
+    - name: Remove instance from the host file
+      local_action: lineinfile dest=hosts regexp="{{ id }}" state=absent
+      when: cloud == 'openstack'
+
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - ./cloud_vars.yml
+
+  tasks:    
+    - name: Delete the tenant subnet
+      os_subnet:
+        state: absent
+        name: '{{ cloud_tag }}'
+        
+    - name: Delete the tenant network
+      os_network:
+        state: absent
+        shared: false
+        name: '{{ cloud_tag }}'
+        
+    - name: Delete the Private Key 
+      os_keypair:
+        state: absent
+        name: '{{ cloud_tag }}_key'
+        
+    - name: Delete security group
+      os_security_group:
+        state: absent
+        name: '{{ cloud_tag }}'

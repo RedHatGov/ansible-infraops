@@ -1,0 +1,101 @@
+---
+- hosts: spokes:hosts 
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+    
+  tasks:
+    - name: Terminate instances that were previously launched
+      ec2:
+        state: 'absent'
+        region: '{{ cloud_info["aws"].region }}'
+        instance_ids: '{{ id }}'
+        wait: yes
+      when: cloud == 'aws'
+      
+    - name: Remove instance from the host file
+      local_action: lineinfile dest=hosts regexp="{{ id }}" state=absent
+      when: cloud == 'aws'
+
+- hosts: localhost
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+
+  tasks:
+    - name: Get VPC ID
+      ec2_vpc_subnet_facts:
+        region: '{{ cloud_info["aws"].region }}'
+        filters:
+          "tag:Name": '{{ cloud_tag }}_inside'
+      register: ec2_vpc_subnet_facts
+
+    - name: Set the VPC
+      set_fact:
+        vpc_id: '{{ ec2_vpc_subnet_facts["subnets"][0].vpc_id if ec2_vpc_subnet_facts["subnets"] is defined else "unknown" }}'
+
+    - name: Destroy outside subnet
+      ec2_vpc_subnet:
+        state: absent
+        vpc_id: '{{ vpc_id }}'
+        cidr: '{{ cloud_info["aws"].outside_cidr }}'
+        region: '{{ cloud_info["aws"].region }}'
+        az: '{{ cloud_info["aws"].region }}b'
+        resource_tags:
+          Name: '{{ cloud_tag }}_outside'
+          Environment: '{{ cloud_tag }}'
+
+    - name: Get the inside interface facts
+      ec2_eni_facts:
+        region: '{{ cloud_info["aws"].region }}'
+        filters:
+          addresses.private-ip-address: '{{ cloud_info["aws"].csr_inside_ip }}'
+      register: csr_inside_interface_facts
+
+#    - debug: var=hostvars[inventory_hostname]
+
+    - name: Destroy the inside interface
+      ec2_eni:
+        region: '{{ cloud_info["aws"].region }}'
+        eni_id: '{{ hostvars[inventory_hostname]["csr_inside_interface_facts"]["interfaces"][0].id }}'
+        state: absent
+
+    - name: Destroy inside subnet
+      ec2_vpc_subnet:
+        state: absent
+        vpc_id: '{{ vpc_id }}'
+        cidr: '{{ cloud_info["aws"].inside_cidr }}'
+        region: '{{ cloud_info["aws"].region }}'
+        az: '{{ cloud_info["aws"].region }}b'
+        resource_tags:
+          Name: '{{ cloud_tag }}_inside'
+          Environment: '{{ cloud_tag }}'
+
+    - name: Destroy Security Group
+      ec2_group:
+        state: absent
+        name: '{{ cloud_tag }}'
+        description: an example EC2 group
+        vpc_id: '{{ vpc_id }}'
+        region: '{{ cloud_info["aws"].region }}'
+
+    - name: Destroy the ssh key pair
+      ec2_key:
+        name: '{{ cloud_tag }}_key'
+        region: '{{ cloud_info["aws"].region }}'
+        key_material: '{{ ssh_public_key }}'
+        state: absent
+        
+    - name: Destroy VPC
+      ec2_vpc:
+        state: absent
+        vpc_id: '{{ vpc_id }}'
+        cidr_block: '{{ cloud_info["aws"].vpc_cidr }}'
+        resource_tags:
+          Name: '{{ cloud_tag }}'
+          Environment: '{{ cloud_tag }}'
+        region: '{{ cloud_info["aws"].region }}'
+
+      

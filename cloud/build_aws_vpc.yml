@@ -1,0 +1,211 @@
+---
+- hosts: localhost
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+  
+
+  tasks:
+    - name: Create the ssh key pair
+      ec2_key:
+        name: '{{ cloud_tag }}_key'
+        region: '{{ cloud_info["aws"].region }}'
+        key_material: '{{ ssh_public_key }}'
+        state: present
+
+    - name: Create VPC
+      ec2_vpc:
+        state: present
+        cidr_block: '{{ cloud_info["aws"].vpc_cidr }}'
+        resource_tags:
+          Name: '{{ cloud_tag }}'
+          Environment: '{{ cloud_tag }}'
+        region: '{{ cloud_info["aws"].region }}'
+        dns_hostnames: no
+        dns_support: yes
+        instance_tenancy: default
+        internet_gateway: True
+      register: vpc
+
+    - name: Create Security Group
+      ec2_group:
+        name: '{{ cloud_tag }}'
+        description: an example EC2 group
+        vpc_id: '{{ vpc.vpc_id }}'
+        region: '{{ cloud_info["aws"].region }}'
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 8022
+            to_port: 8022
+            cidr_ip: 0.0.0.0/0
+          - proto: udp
+            from_port: 500
+            to_port: 500
+            cidr_ip: 0.0.0.0/0
+          - proto: udp
+            from_port: 4500
+            to_port: 4500
+            cidr_ip: 0.0.0.0/0                         
+          - proto: icmp
+            from_port: 8 # icmp type, -1 = any type
+            to_port:  -1 # icmp subtype, -1 = any subtype
+            cidr_ip: 0.0.0.0/0
+      register: csr_security_group
+
+    - name: Create outside subnet
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: '{{ vpc.vpc_id }}'
+        cidr: '{{ cloud_info["aws"].outside_cidr }}'
+        region: '{{ cloud_info["aws"].region }}'
+        az: '{{ cloud_info["aws"].region }}b'
+        resource_tags:
+          Name: '{{ cloud_tag }}_outside'
+          Environment: '{{ cloud_tag }}'
+      register: outside_subnet
+
+    - name: Set up outside subnet route table
+      ec2_vpc_route_table:
+        vpc_id: '{{ vpc.vpc_id }}'
+        region: '{{ cloud_info["aws"].region }}'
+        tags:
+          Name: CSR (Public)
+          Owner: stevenca
+          Environment: '{{ cloud_tag }}'
+        subnets:
+          - '{{ outside_subnet.subnet.id }}'
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ vpc.igw_id }}"
+      register: public_route_table
+      when: outside_subnet.changed
+
+    - name: Create CSR instance
+      ec2:
+        key_name: '{{ cloud_tag }}_key'
+        region: '{{ cloud_info["aws"].region }}'
+        instance_type: '{{ cloud_info["aws"].csr_type }}'
+        instance_tags:
+          Name: '{{ cloud_tag }}_csr'
+          Environment: '{{ cloud_tag }}'
+          Role: '{{ cloud_tag }}_csr'
+        image: '{{ cloud_info["aws"].csr_ami }}'
+        group_id: '{{ csr_security_group.group_id }}'
+        wait: yes
+        exact_count: 1
+        count_tag:
+          - Role: '{{ cloud_tag }}_csr'
+        vpc_subnet_id: '{{ outside_subnet.subnet.id }}'
+        assign_public_ip: yes
+        user_data: 'ios-config-0001=ip route 0.0.0.0 0.0.0.0 GigabitEthernet1 dhcp'
+      register: csr
+
+#    - debug: var=hostvars[inventory_hostname]
+
+    - name: Get the CSR's Instance ID
+      set_fact:
+        csr_instance_id: '{{ hostvars[inventory_hostname]["csr"]["tagged_instances"][0].id if hostvars[inventory_hostname]["csr"]["tagged_instances"][0] is defined else "none" }}'
+
+    - name: Get the CSR's Private IP Address
+      set_fact:
+        csr_outside_private_ip: '{{ hostvars[inventory_hostname]["csr"]["tagged_instances"][0].private_ip if hostvars[inventory_hostname]["csr"]["tagged_instances"][0] is defined else "none" }}'
+
+    - name: Get the CSR's Public IP Address
+      set_fact:
+        csr_outside_public_ip: '{{ hostvars[inventory_hostname]["csr"]["tagged_instances"][0].public_ip if hostvars[inventory_hostname]["csr"]["tagged_instances"][0] is defined else "none" }}'
+
+    - name: Add CSR to local host group
+      local_action: lineinfile dest=hosts regexp="{{ csr_instance_id }}" insertafter="\[spokes\]" line="{{ csr_outside_public_ip }} csr_outside_private_ip={{ csr_outside_private_ip }} id={{ csr_instance_id }} cloud=aws" state=present
+      when: csr_outside_public_ip != "none"
+
+    - name: Create Inside subnet
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: '{{ vpc.vpc_id }}'
+        cidr: '{{ cloud_info["aws"].inside_cidr }}'
+        region: '{{ cloud_info["aws"].region }}'
+        az: '{{ cloud_info["aws"].region }}b'
+        resource_tags:
+          Name: '{{ cloud_tag }}_inside'
+          Environment: '{{ cloud_tag }}'
+      register: inside_subnet
+
+    - name: Check to see if the inside interface already exists
+      ec2_eni_facts:
+        region: '{{ cloud_info["aws"].region }}'
+        filters:
+          addresses.private-ip-address: '{{ cloud_info["aws"].csr_inside_ip }}'
+      register: csr_inside_interface_facts
+           
+    - name: Create CSR's inside interface            
+      ec2_eni:
+        instance_id: '{{ csr_instance_id }}'
+        region: '{{ cloud_info["aws"].region }}'
+        device_index: 1
+        private_ip_address: '{{ cloud_info["aws"].csr_inside_ip }}'
+        subnet_id: '{{ inside_subnet.subnet.id }}'
+        state: present
+        delete_on_termination: true
+        security_groups: '{{ csr_security_group.group_id }}'
+      register: csr_inside_interface
+      when: hostvars[inventory_hostname]["csr_inside_interface_facts"]["interfaces"][0] is not defined
+
+    - name: Set the CSR inside interface ID
+      set_fact:
+        csr_inside_eni: '{{ hostvars[inventory_hostname]["csr_inside_interface"]["interface"].id if csr_inside_interface.changed else hostvars[inventory_hostname]["csr_inside_interface_facts"]["interfaces"][0].id }}'
+
+    - name: Disable Source/Dest check on the inside interface
+      ec2_eni:
+        eni_id: '{{ csr_inside_eni }}'
+        region: '{{ cloud_info["aws"].region }}'
+        subnet_id: '{{ inside_subnet.subnet.id }}'
+        source_dest_check: false
+        state: present
+
+    - name: Set up inside subnet route table
+      ec2_vpc_route_table:
+        vpc_id: '{{ vpc.vpc_id }}'
+        region: '{{ cloud_info["aws"].region }}'
+        tags:
+          Name: CSR (Private)
+          Owner: stevenca
+          Environment: '{{ cloud_tag }}'
+        subnets:
+          - '{{ inside_subnet.subnet.id }}'
+        routes:
+          - dest: 0.0.0.0/0
+            interface_id: '{{ csr_inside_eni }}'
+      register: private_route_table       
+
+    - name: Create login instance
+      ec2:
+        key_name: '{{ cloud_tag }}_key'
+        region: '{{ cloud_info["aws"].region }}'
+        instance_type: '{{ cloud_info["aws"].host_type }}'
+        instance_tags:
+          Name: '{{ cloud_tag }}_login'
+          Environment: '{{ cloud_tag }}'
+          Role: '{{ cloud_tag }}_login'
+        image: '{{ cloud_info["aws"].host_ami }}'
+        group_id: '{{ csr_security_group.group_id }}'
+        exact_count: 1
+        count_tag:
+          - Role: '{{ cloud_tag }}_login'
+        wait: yes
+        vpc_subnet_id: '{{ inside_subnet.subnet.id }}'
+        private_ip: '{{ cloud_info["aws"].host_ip }}'
+        assign_public_ip: no
+      register: login_server
+
+    - name: Add Login Server to local host group
+      local_action: lineinfile dest=hosts regexp="{{ hostvars[inventory_hostname]["login_server"]["tagged_instances"][0].id }}" insertafter="\[hosts\]" line="{{ hostvars[inventory_hostname]["login_server"]["tagged_instances"][0].private_ip }} name={{ cloud_tag }}_login id={{ hostvars[inventory_hostname]["login_server"]["tagged_instances"][0].id }} cloud=aws" state=present
+      when: csr_outside_public_ip != "none"
+
+    - name: Waiting for CSR to finish booting
+      local_action: wait_for port=22 host="{{ csr_outside_public_ip }}" timeout=600 delay=300   
+
+#    - debug: var=hostvars[inventory_hostname]

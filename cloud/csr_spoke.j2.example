@@ -1,0 +1,35 @@
+crypto isakmp policy 10
+ encr aes 256
+ hash sha256
+ authentication pre-share
+crypto isakmp key {{ crypto_shared_key }} address 0.0.0.0
+crypto isakmp keepalive 30
+!
+!
+crypto ipsec transform-set xform esp-aes 256 esp-sha256-hmac
+ mode transport
+!
+!
+crypto ipsec profile ipsec-prof
+ set transform-set xform
+!
+interface Tunnel0
+ ip address {{ dmvpn_tunnel_address }} {{ dmvpn_tunnel_mask }}
+ no ip redirects
+ ip mtu 1400
+ ip nhrp network-id 1
+ ip nhrp nhs 172.24.0.1 nbma {{ cloud_info["openstack"].csr_public_ip }} multicast
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet1
+ tunnel mode gre multipoint
+ tunnel key 1
+ tunnel protection ipsec profile ipsec-prof
+!
+router eigrp 1
+ network {{ dmvpn_network_address }} {{ dmvpn_host_mask }}
+ network {{ spoke_network_address }} {{ spoke_host_mask }}
+ passive-interface default
+ no passive-interface Tunnel0
+ eigrp stub connected
+!

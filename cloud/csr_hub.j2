@@ -1,0 +1,35 @@
+!
+crypto isakmp policy 10
+ encr aes 256
+ hash sha256
+ authentication pre-share
+crypto isakmp key {{ crypto_shared_key }} address 0.0.0.0
+!
+!
+crypto ipsec transform-set xform esp-aes 256 esp-sha256-hmac
+ mode transport
+!
+!
+crypto ipsec profile ipsec-prof
+ set transform-set xform
+!
+interface Tunnel0
+ ip address 172.24.0.1 255.255.255.0
+ no ip redirects
+ ip mtu 1400
+ ip nhrp map multicast dynamic
+ ip nhrp network-id 1
+ ip nhrp redirect
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet1
+ tunnel mode gre multipoint
+ tunnel key 1
+ tunnel protection ipsec profile ipsec-prof
+end
+!
+router eigrp 1
+ network 10.30.0.0 0.0.255.255
+ network {{ dmvpn_network_address }} {{ dmvpn_host_mask }}
+ passive-interface default
+ no passive-interface Tunnel0
+!

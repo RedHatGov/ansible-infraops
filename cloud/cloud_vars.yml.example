@@ -1,0 +1,47 @@
+---
+cloud_tag: 'user-hybrid-cloud'
+dns_server1: 8.8.8.8
+dns_server2: 8.8.4.4
+dmvpn_network_cidr: 172.24.0.0/24
+azure_region: 'eastus'
+azure_resource_group: 'user-hybrid-cloud'
+ssh_public_key: 'ssh-rsa SADJGJ#@T%J%^LJSDF...  user@host'
+crypto_shared_key: 'Cisco123'
+
+cloud_info:
+  aws:
+    region: us-west-1
+    username: 'ec2-user'
+    csr_ami: ami-4bf7842b
+    csr_type: m3.medium
+    login_ami: ami-d1315fb1
+    login_type: t2.micro
+    vpc_cidr: 10.5.0.0/16
+    outside_cidr: 10.5.0.0/24
+    inside_cidr: 10.5.1.0/24
+    csr_inside_ip: 10.5.1.254
+    host_ip: 10.5.1.10
+    tunnel_ip: 172.24.0.5/24
+  azure:
+    region: eastus
+    username: 'azureuser'
+    vpc_cidr: 10.7.0.0/16
+    outside_cidr: 10.7.0.0/24
+    inside_cidr: 10.7.1.0/24
+    csr_outside_ip: 10.7.0.254
+    csr_inside_ip: 10.7.1.254
+    host_ip: 10.7.1.10
+    tunnel_ip: 172.24.0.6/24
+  openstack:
+    username: 'cloud'
+    csr_image: csr1000v-universalk9.03.16.03.S.155-3.S3-ext
+    csr_flavor: csr.medium
+    inside_cidr: 10.30.1.0/24
+    csr_inside_ip: 10.30.1.1
+    csr_public_ip: 1.2.3.4
+    shared_network: 88041eff-d402-408f-aa43-c5928b97b6d2
+    external_network: 898c045d-9aac-4558-925f-e6663c0d830b
+    host_ip: 10.30.1.10
+    host_image: 4d81223a-7b9a-4f4e-8952-914bb0f86f0f
+    host_flavor: e0e3d365-f495-43f9-b0ea-7037ea337576
+    tunnel_ip: 172.24.0.1/24

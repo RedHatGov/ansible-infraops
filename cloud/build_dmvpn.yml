@@ -1,0 +1,94 @@
+---
+- hosts: hubs 
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+    
+  tasks:
+    - name: Set the username used by the cloud
+      set_fact: cloud_username='{{ cloud_info[cloud].username }}'
+      
+    - name: Set the DMVPN Network Address
+      set_fact: dmvpn_network_address='{{ dmvpn_network_cidr | ipaddr('network') }}'
+      
+    - name: Set the DMVPN Network Mask
+      set_fact: dmvpn_host_mask='{{ dmvpn_network_cidr | ipaddr('hostmask') }}'
+      
+    - name: Add DMVPN Configuration to Hub
+      ios_template:
+        src: csr_hub.j2
+        host: "{{ inventory_hostname }}"
+        username: "cloud"
+
+    - name: write config
+      ios_command:
+        host: '{{ inventory_hostname }}'
+        username: '{{ cloud_username }}'
+        commands: write
+        
+- hosts: spokes
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ./cloud_vars.yml
+    
+  tasks:
+
+    - name: Set the username used by the cloud
+      set_fact: cloud_username='{{ cloud_info[cloud].username }}'
+
+    - name: Set the DMVPN Network Address
+      set_fact: dmvpn_network_address='{{ dmvpn_network_cidr | ipaddr('network') }}'
+      
+    - name: Set the DMVPN Network Mask
+      set_fact: dmvpn_host_mask='{{ dmvpn_network_cidr | ipaddr('hostmask') }}'
+
+    - name: Set the DMVPN Spoke Network
+      set_fact: spoke_network_address='{{ cloud_info[cloud].inside_cidr | ipaddr('network') }}'
+      
+    - name: Set the DMVPN Spoke Mask
+      set_fact: spoke_host_mask='{{ cloud_info[cloud].inside_cidr | ipaddr('hostmask') }}'
+
+    - name: Set the DMVPN Tunnel Address
+      set_fact: dmvpn_tunnel_address='{{ cloud_info[cloud].tunnel_ip | ipaddr('address') }}'
+
+    - name: Set the DMVPN Tunnel Subnet Mask
+      set_fact: dmvpn_tunnel_mask='{{ cloud_info[cloud].tunnel_ip | ipaddr('netmask') }}'
+
+    - name: Add DMVPN Configuration to Spoke
+      ios_template:
+        src: csr_spoke.j2
+        host: '{{ inventory_hostname }}'
+        username: '{{ cloud_username }}'
+
+    - name: write config
+      ios_command:
+        host: '{{ inventory_hostname }}'
+        username: '{{ cloud_username }}'
+        commands: write
+
+#    - name: write config
+#      ios_command:
+#        host: "{{ inventory_hostname }}"
+#        username: "cloud"
+#        commands: write
+#
+#    - name: Initital CSR Configuration
+#      ios_template:
+#        src: csr_initial.j2
+#        username: ec2-user
+#        ssh_keyfile: /home/stevenca/aws/STEVENCA-M-202D
+#        host: '{{ csr_public_ip }}'
+#      notify:
+#        - write config
+#
+# handlers:
+#   - name: write config
+#     ios_command:
+#       commands: write
+#       username: ec2-user
+#       ssh_keyfile: /home/stevenca/aws/STEVENCA-M-202D
+#       host: '{{ csr_public_ip }}'
+  
+      

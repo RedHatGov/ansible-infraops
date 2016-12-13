@@ -1,0 +1,187 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    csr_outside_public_ip:
+  vars_files:
+    - ./cloud_vars.yml
+  
+  tasks: 
+    - name: Create the Private Key 
+      os_keypair:
+        state: present
+        name: '{{ cloud_tag }}_key'
+        public_key: '{{ ssh_public_key }}'
+       
+    - name: Create the tenant network
+      os_network:
+        state: present
+        shared: false
+        name: '{{ cloud_tag }}'
+        external: false
+      register: tenant_network
+        
+    - name: Create the tenant subnet
+      os_subnet:
+        state: present
+        network_name: '{{ cloud_tag }}'
+        name: '{{ cloud_tag }}'
+        cidr: '{{ cloud_info["openstack"].inside_cidr }}'
+        dns_nameservers:
+          - '{{ dns_server1 }}'
+          - '{{ dns_server2 }}'
+        host_routes:
+          - destination: 0.0.0.0/0
+            nexthop: '{{ cloud_info["openstack"].csr_inside_ip }}'
+      register: tenant_subnet 
+
+    - name: Create security group
+      os_security_group:
+        state: present
+        name: '{{ cloud_tag }}'
+
+    - name: Add SSH security group rules
+      os_security_group_rule:
+        security_group: '{{ cloud_tag }}'
+        protocol: tcp
+        port_range_min: 22
+        port_range_max: 22
+        remote_ip_prefix: 0.0.0.0/0
+
+    - name: Add SSH security group rules
+      os_security_group_rule:
+        security_group: '{{ cloud_tag }}'
+        protocol: icmp
+        port_range_min: -1
+        port_range_max: -1
+        remote_ip_prefix: 0.0.0.0/0
+
+    - name: Add UDP 500 security group rules
+      os_security_group_rule:
+        security_group: '{{ cloud_tag }}'
+        protocol: udp
+        port_range_min: 500
+        port_range_max: 500
+        remote_ip_prefix: 0.0.0.0/0
+
+    - name: Add UDP 4500 security group rules
+      os_security_group_rule:
+        security_group: '{{ cloud_tag }}'
+        protocol: udp
+        port_range_min: 4500
+        port_range_max: 4500
+        remote_ip_prefix: 0.0.0.0/0
+
+    - name: Add private network port
+      os_port:
+        state: present
+        name: '{{ cloud_tag }}_private_port'
+        network: '{{ tenant_network.id }}'
+        no_security_groups:
+        fixed_ips:
+          - ip_address: '{{ cloud_info["openstack"].csr_inside_ip }}'
+        allowed_address_pairs:
+          - ip_address: 10.0.0.0/8
+      register: csr_inside_port
+
+    - name: Add outside network port
+      os_port:
+        state: present
+        name: '{{ cloud_tag }}_outside_port'
+        network: '{{ cloud_info["openstack"].shared_network }}'
+        security_groups: '{{ cloud_tag }}'
+      register: csr_outside_port
+
+    - name: Get the CSR's Private IP Address
+      set_fact:
+        csr_outside_private_ip: '{{ hostvars[inventory_hostname]["csr_outside_port"]["port"]["fixed_ips"][0].ip_address if hostvars[inventory_hostname]["csr_outside_port"]["port"]["fixed_ips"][0] is defined else "none" }}'
+
+    - name: Get the Shared Network Name
+      os_networks_facts:
+        name:  '{{ cloud_info["openstack"].shared_network }}'
+      register: shared_network_facts
+    
+    - name: Set the Shared Network Name
+      set_fact:
+        shared_network_name: '{{ hostvars[inventory_hostname]["shared_network_facts"]["ansible_facts"]["openstack_networks"][0].name }}'
+
+      # Since we are not using the ansble module to start the CSR, we need to check
+      # first to maintain the idempotency
+    - name: See if the CSR is already there
+      os_server_facts:
+        server: '{{ cloud_tag }}_csr'
+      register: csr_facts
+
+#    - name: Add hostname to CSR Configuration File
+#      local_action: lineinfile dest=iosxe_config.txt regexp="hostname" line="hostname {{ cloud_tag }}_csr" state=present
+
+#    - name: Add ssh-key to CSR Configuration File
+#      local_action: lineinfile dest=iosxe_config.txt regexp="key-string" insertafter="username cloud" line="key-string {{ ssh_public_key }}" state=present
+          
+    - name: Create the CSR
+      shell: nova boot {{ cloud_tag }}_csr --image {{ cloud_info["openstack"].csr_image }} --flavor {{ cloud_info["openstack"].csr_flavor }} --nic port-id={{ csr_outside_port.port.id }} --nic port-id={{ csr_inside_port.port.id }} --config-drive=true --file iosxe_config.txt=./iosxe_config.txt --security-groups {{ cloud_tag }} --key_name {{ cloud_tag }}_key
+      args:
+        executable: /bin/bash
+      when: hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0] is not defined
+      register: openstack_csr
+
+    - pause: seconds=60
+      when: hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0] is not defined
+
+    - name: Get CSR Public IP Address
+      os_server_facts:
+        server: '{{ cloud_tag }}_csr'
+      register: csr_facts
+      
+    - name: Get the Public IP Address
+      set_fact:
+        csr_outside_public_ip: '{{ hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0]["addresses"][shared_network_name][1].addr if hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0]["addresses"][shared_network_name][1] is defined else "none" }}'
+
+    - name: Add the Floating IP
+      os_floating_ip:
+        state: present
+        reuse: yes
+        fixed_address: '{{ csr_outside_private_ip }}'
+        floating_ip_address: '{{ cloud_info["openstack"].csr_public_ip }}'
+        network: '{{ cloud_info["openstack"].external_network }}'
+        server: '{{ cloud_tag }}_csr'
+        wait: true
+        timeout: 180
+      when: csr_outside_public_ip == "none"
+      register: csr_floating_ip
+
+      # Need to run a third time because the floating IP does not seem to return reliably
+    - name: Get CSR Public IP Address
+      os_server_facts:
+        server: '{{ cloud_tag }}_csr'
+      register: csr_facts
+
+    - name: Set the Public IP Address
+      set_fact:
+        csr_outside_public_ip: '{{ hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0]["addresses"][shared_network_name][1].addr if hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0]["addresses"][shared_network_name][1] is defined else "none" }}'
+
+    - name: Add CSR to local host group
+      local_action: lineinfile dest=hosts regexp="hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0].id" insertafter="\[hubs\]" line="{{ csr_outside_public_ip }} csr_outside_private_ip={{ csr_outside_private_ip }} name={{ cloud_tag }}_csr id={{ hostvars[inventory_hostname]["csr_facts"]["ansible_facts"]["openstack_servers"][0].id }} cloud=openstack" state=present
+      when: csr_outside_public_ip != "none"
+
+    - name: Create Login Server
+      os_server:
+        state: present
+        name: '{{ cloud_tag }}_login'
+        image: CentOS-7-x86_64-GenericCloud-1508-mc
+        key_name: '{{ cloud_tag }}_key'
+        timeout: 60       
+        flavor: m1.small
+        nics:
+          - net-id: '{{ csr_inside_port.port.network_id }}'
+      register: login_server_facts
+
+#    - debug: var=hostvars[inventory_hostname]
+    
+    - name: Add instance to local host group
+      local_action: lineinfile dest=hosts regexp="hostvars[inventory_hostname]["login_server_facts"].id" insertafter="\[hosts\]" line="{{ hostvars[inventory_hostname]["login_server_facts"]["openstack"].interface_ip }} name={{ cloud_tag }}_login id={{ hostvars[inventory_hostname]["login_server_facts"].id }} cloud=openstack" state=present
+
+    - name: Waiting for CSR to finish booting
+      local_action: wait_for port=22 host="{{ csr_outside_public_ip }}" timeout=600
+        

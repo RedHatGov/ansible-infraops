@@ -1,0 +1,411 @@
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    csr_name: csr
+  vars_files:
+    - ./cloud_vars.yml
+    
+  tasks:
+    # The name of the storage group must be between 3 and 24 characters in length and use numbers and lower-case letters only
+    - name: Set name of the storage group
+      set_fact: storage_group={{ cloud_tag | regex_replace('[^A-z,0-9]', '') }}
+
+    - name: Create a resource group
+      azure_rm_resourcegroup:
+        state: present
+        name: '{{ cloud_tag }}'
+        location: '{{ cloud_info["azure"].region }}'
+
+    - name: Create storage account
+      azure_rm_storageaccount:
+        state: present      
+        resource_group: '{{ cloud_tag }}'
+        name: '{{ storage_group }}'
+        type: Standard_LRS
+        tags:
+          delete: on-exit
+
+    - name: Create security group
+      azure_rm_securitygroup:
+        state: present      
+        resource_group: '{{ cloud_tag }}'
+        name: '{{ cloud_tag }}'
+        purge_rules: yes
+        rules:
+          - name: 'AllowSSH'
+            protocol: Tcp
+            source_address_prefix: "Internet"
+            destination_port_range: 22
+            access: Allow
+            priority: 100
+            direction: Inbound
+          - name: 'AllowUDP500'
+            protocol: Udp
+            source_address_prefix: "Internet"
+            destination_port_range: 500
+            access: Allow
+            priority: 101
+            direction: Inbound
+          - name: 'AllowUSP4500'
+            protocol: Udp
+            source_address_prefix: "Internet"
+            destination_port_range: 500
+            access: Allow
+            priority: 102
+            direction: Inbound
+
+    - name: Create virtual network
+      azure_rm_deployment:
+        deployment_mode: incremental
+        wait_for_deployment_completion: yes
+        state: present
+        location: '{{ cloud_info["azure"].region }}'
+        resource_group_name: '{{ cloud_tag }}'
+        template:
+          $schema: "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          resources:
+            - 
+              comments: "Create Outside Route Table"
+              type: "Microsoft.Network/routeTables"
+              name: '{{ cloud_tag }}_outside_routes'
+              apiVersion: "2016-03-30"
+              location: '{{ cloud_info["azure"].region }}'
+              properties: 
+                routes: 
+                  - 
+                    name: "Route-Inside_Subnet-To-CSR"
+                    properties: 
+                      addressPrefix: '{{ cloud_info["azure"].inside_cidr }}'
+                      nextHopType: "VirtualAppliance"
+                      nextHopIpAddress: '{{ cloud_info["azure"].csr_outside_ip }}'
+              dependsOn: []
+            - 
+              comments: "Create Inside Route Table"
+              type: "Microsoft.Network/routeTables"
+              name: '{{ cloud_tag }}_inside_routes'
+              apiVersion: "2016-03-30"
+              location: '{{ cloud_info["azure"].region }}'
+              properties: 
+                routes: 
+                  - 
+                    name: "Route-Outside_Subnet-To-CSR"
+                    properties: 
+                      addressPrefix: '{{ cloud_info["azure"].outside_cidr }}'
+                      nextHopType: "VirtualAppliance"
+                      nextHopIpAddress: '{{ cloud_info["azure"].csr_inside_ip }}'
+                  - 
+                    name: "Default-Route-To-CSR"
+                    properties: 
+                      addressPrefix: "0.0.0.0/0"
+                      nextHopType: "VirtualAppliance"
+                      nextHopIpAddress: '{{ cloud_info["azure"].csr_inside_ip }}'
+              dependsOn: []
+            - 
+              comments: "Generalized from resource: '/subscriptions/025bfe8c-a09b-4e2e-ac1b-7a9257e14563/resourceGroups/CSR/providers/Microsoft.Network/virtualNetworks/vnet01'."
+              type: "Microsoft.Network/virtualNetworks"
+              name: '{{ cloud_tag }}_vnet'
+              apiVersion: "2016-03-30"
+              location: '{{ cloud_info["azure"].region }}'
+              properties: 
+                addressSpace: 
+                  addressPrefixes: 
+                    - '{{ cloud_info["azure"].vpc_cidr }}'
+                subnets: 
+                  - 
+                    name: '{{ cloud_tag }}_outside'
+                    properties: 
+                      addressPrefix: '{{ cloud_info["azure"].outside_cidr }}'
+                      routeTable: 
+                        id: "[resourceId('Microsoft.Network/routeTables', '{{ cloud_tag }}_outside_routes')]"
+                  - 
+                    name: '{{ cloud_tag }}_inside'
+                    properties: 
+                      addressPrefix: '{{ cloud_info["azure"].inside_cidr }}'
+                      routeTable: 
+                        id: "[resourceId('Microsoft.Network/routeTables', '{{ cloud_tag }}_inside_routes')]"
+              dependsOn: 
+                - "[resourceId('Microsoft.Network/routeTables', '{{ cloud_tag }}_outside_routes')]"
+                - "[resourceId('Microsoft.Network/routeTables', '{{ cloud_tag }}_inside_routes')]"
+
+    - name: Create a public ip address
+      azure_rm_publicipaddress:
+        resource_group: '{{ cloud_tag }}'
+        name: 'csr_public_ip'
+        allocation_method: Static
+      register: csr_public_ip
+      
+    - name: Create the CSR
+      azure_rm_deployment:
+        deployment_mode: incremental
+        wait_for_deployment_completion: yes
+        state: present
+        location: '{{ cloud_info["azure"].region }}'
+        resource_group_name: '{{ cloud_tag }}'
+        template:
+          $schema: "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          variables:
+            csr_osDisk_uri: "[concat('http://','{{ storage_group }}','.blob.core.windows.net/vhds/','{{ cloud_tag }}-csr','.vhd')]"
+          resources:
+            - 
+              comments: "Create CSR's outside interface"
+              type: "Microsoft.Network/networkInterfaces"
+              name: 'csr_outside_interface'
+              apiVersion: "2016-03-30"
+              location: '{{ cloud_info["azure"].region }}'
+              properties: 
+                ipConfigurations: 
+                  - 
+                    name: "ipconfig1"
+                    properties: 
+                      privateIPAddress: '{{ cloud_info["azure"].csr_outside_ip }}'
+                      privateIPAllocationMethod: "Static"
+                      publicIPAddress: 
+                        id: "[resourceId('Microsoft.Network/publicIPAddresses', 'csr_public_ip')]"
+                      subnet: 
+                        id: "[concat(resourceId('Microsoft.Network/virtualNetworks', '{{ cloud_tag }}_vnet'), '/subnets/', '{{ cloud_tag }}_outside')]"
+                dnsSettings: 
+                  dnsServers: []
+                enableIPForwarding: true
+                networkSecurityGroup: 
+                  id: "[resourceId('Microsoft.Network/networkSecurityGroups', '{{ cloud_tag }}')]"
+#              dependsOn: 
+#                - "[resourceId('Microsoft.Network/publicIPAddresses', 'csr_public_ip')]"
+#                - "[resourceId('Microsoft.Network/virtualNetworks', '{{ cloud_tag }}_vnet')]"
+#                - "[resourceId('Microsoft.Network/networkSecurityGroups', '{{ cloud_tag }}')]"
+            - 
+              comments: "Create CSR's inside interface"
+              type: "Microsoft.Network/networkInterfaces"
+              name: 'csr_inside_interface'
+              apiVersion: "2016-03-30"
+              location: '{{ cloud_info["azure"].region }}'
+              properties: 
+                ipConfigurations: 
+                  - 
+                    name: "ipconfig1"
+                    properties: 
+                      privateIPAddress: '{{ cloud_info["azure"].csr_inside_ip }}'
+                      privateIPAllocationMethod: "Static"
+                      subnet: 
+                        id: "[concat(resourceId('Microsoft.Network/virtualNetworks', '{{ cloud_tag }}_vnet'), '/subnets/', '{{ cloud_tag }}_inside')]"
+                dnsSettings: 
+                  dnsServers: []
+                enableIPForwarding: true
+#              dependsOn: 
+#                - "[resourceId('Microsoft.Network/virtualNetworks', '{{ cloud_tag }}_vnet')]"
+            - 
+              comments: "Create CSR"
+              type: "Microsoft.Compute/virtualMachines"
+              name: '{{ cloud_tag }}-csr'
+              apiVersion: "2015-06-15"
+              location: '{{ cloud_info["azure"].region }}'
+              plan: 
+                name: "csr-azure-byol"
+                product: "cisco-csr-1000v"
+                publisher: "cisco"
+              properties: 
+                hardwareProfile: 
+                  vmSize: "Standard_D2"
+                storageProfile: 
+                  imageReference: 
+                    publisher: "cisco"
+                    offer: "cisco-csr-1000v"
+                    sku: "csr-azure-byol"
+                    version: "latest"
+                  osDisk: 
+                    name: "[concat('{{ cloud_tag }}-csr','-disk')]"
+                    createOption: "FromImage"
+                    vhd: 
+                      uri: "[variables('csr_osDisk_uri')]"
+                    caching: "ReadWrite"
+                  dataDisks: []
+                osProfile: 
+                  computerName: '{{ cloud_tag }}-csr'
+                  adminUsername: "azureuser"
+                  linuxConfiguration: 
+                    disablePasswordAuthentication: true
+                    ssh: 
+                      publicKeys: 
+                        - 
+                          path: "/home/azureuser/.ssh/authorized_keys"
+                          keyData: "{{ ssh_public_key }}"
+                  secrets: []
+                  adminPassword: '{{ crypto_shared_key }}'
+                networkProfile: 
+                  networkInterfaces: 
+                    - 
+                      properties: 
+                        primary: true
+                      id: "[resourceId('Microsoft.Network/networkInterfaces', 'csr_outside_interface')]"
+                    - 
+                      properties: 
+                        primary: false
+                      id: "[resourceId('Microsoft.Network/networkInterfaces', 'csr_inside_interface')]"
+              dependsOn: 
+                - "[resourceId('Microsoft.Network/networkInterfaces', 'csr_outside_interface')]"
+                - "[resourceId('Microsoft.Network/networkInterfaces', 'csr_inside_interface')]"
+
+    - debug: var=hostvars[inventory_hostname]
+    
+#    - name: Create inside interface for CSR
+#      azure_rm_networkinterface:
+#        state: present
+#        name: csr_inside_interface
+#        resource_group: '{{ cloud_tag }}'
+#        virtual_network_name: '{{ cloud_tag }}'
+#        subnet_name: '{{ cloud_tag }}_inside'
+#        security_group_name: '{{ cloud_tag }}'
+#        public_ip: no
+#        private_ip_address: '{{ cloud_info["azure"].csr_inside_ip }}'
+#      register: csr_inside_interface
+
+#    - name: Create outside interface for CSR
+#      azure_rm_networkinterface:
+#        state: present
+#        name: csr_outside_interface
+#        resource_group: '{{ cloud_tag }}'
+#        virtual_network_name: '{{ cloud_tag }}'
+#        subnet_name: '{{ cloud_tag }}_outside'
+#        security_group_name: '{{ cloud_tag }}'
+#        public_ip: yes
+#      register: csr_outside_interface
+
+    - name: Create a network interface for the login host
+      azure_rm_networkinterface:
+        state: present
+        name: 'host_inside_interface'
+        resource_group: '{{ cloud_tag }}'
+        virtual_network_name: '{{ cloud_tag }}_vnet'
+        subnet_name: '{{ cloud_tag }}_inside'
+        security_group_name: '{{ cloud_tag }}'
+        public_ip: no
+        private_ip_address: '{{ cloud_info["azure"].host_ip }}'
+      register: host_nic
+
+#    - name: Create the Host VM
+#      azure_rm_virtualmachine:
+#        state: present
+#        resource_group: '{{ cloud_tag }}'
+#        name: '{{ cloud_tag }}-host'
+#        vm_size: 'Standard_DS1_v2'
+#        storage_account: '{{ storage_group }}'
+#        admin_username: 'azureuser'
+#        ssh_password_enabled: false
+#        ssh_public_keys:
+#          path: '/home/azureuser/.ssh/authorized_keys'
+#          key_data: '{{ ssh_public_key }}'
+#        network_interfaces: 'host_inside_interface'
+#        image:
+#          offer: CentOS
+#          publisher: OpenLogic
+#          sku: '7.1'
+#          version: latest
+#      register: host_facts
+
+    - name: Create the Host VM
+      azure_rm_deployment:
+        deployment_mode: incremental
+        wait_for_deployment_completion: yes
+        state: present
+        location: '{{ cloud_info["azure"].region }}'
+        resource_group_name: '{{ cloud_tag }}'
+        template:
+          $schema: "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#"
+          contentVersion: "1.0.0.0"
+          variables:
+            host_osDisk_uri: "[concat('http://','{{ storage_group }}','.blob.core.windows.net/vhds/','host.vhd')]"
+          resources:
+            - 
+              comments: "Create Host"
+              type: "Microsoft.Compute/virtualMachines"
+              name: '{{ cloud_tag }}-host'
+              apiVersion: "2015-06-15"
+              location: '{{ cloud_info["azure"].region }}'
+              properties: 
+                hardwareProfile: 
+                  vmSize: "Standard_DS1_v2"
+                storageProfile: 
+                  imageReference: 
+                    publisher: OpenLogic
+                    offer: CentOS
+                    sku: '7.1'
+                    version: "latest"
+                  osDisk: 
+                    name: "[concat('{{ cloud_tag }}-host','-disk')]"
+                    createOption: "FromImage"
+                    vhd: 
+                      uri: "[variables('host_osDisk_uri')]"
+                    caching: "ReadWrite"
+                  dataDisks: []
+                osProfile: 
+                  computerName: '{{ cloud_tag }}-host'
+                  adminUsername: "azureuser"
+                  linuxConfiguration: 
+                    disablePasswordAuthentication: true
+                    ssh: 
+                      publicKeys: 
+                        - 
+                          path: "/home/azureuser/.ssh/authorized_keys"
+                          keyData: "{{ ssh_public_key }}"
+                  secrets: []
+                  adminPassword: '{{ crypto_shared_key }}'
+                networkProfile: 
+                  networkInterfaces: 
+                    - 
+                      properties: 
+                        primary: true
+                      id: "[resourceId('Microsoft.Network/networkInterfaces', 'host_inside_interface')]"
+      
+    - debug: var=hostvars[inventory_hostname]
+
+    - name: Add Login Server to local host group
+      local_action: lineinfile dest=hosts regexp="{{ cloud_info["azure"].host_ip }}" insertafter="\[hosts\]" line="{{ cloud_info["azure"].host_ip }} name={{ cloud_tag }}_login cloud=azure" state=present
+
+    # Getting the IP address through the modules was not reliable, so resorting to the cli
+#    - name: Get The CSR's Public IP Address
+#      shell: azure network public-ip list | awk '/csr_public_ip_address/ {print $8}'
+#      args:
+#        executable: /bin/bash
+#      register: azure_network_public_ip_list
+
+    - name: Set The CSR's Public IP Address
+      set_fact: csr_public_ip_address="{{ hostvars[inventory_hostname]["csr_public_ip"]["state"].ip_address }}"
+
+    - name: Add CSR to local host group
+      local_action: lineinfile dest=hosts regexp="{{ csr_name }}" insertafter="\[spokes\]" line="{{ csr_public_ip_address }} name={{ csr_name }}_csr cloud=azure" state=present
+      when: csr_public_ip_address != "none"       
+
+    - name: Waiting for CSR to finish booting
+      local_action: wait_for port=22 host="{{ csr_public_ip_address }}" timeout=600
+
+#    - name: Create a virtual network
+#      azure_rm_virtualnetwork:
+#        state: present
+#        name: '{{ cloud_tag }}_vnet'
+#        resource_group: '{{ cloud_tag }}'
+#        address_prefixes_cidr:
+#          - '{{ cloud_info["azure"].vpc_cidr }}'
+#        dns_servers:
+#          - '{{ dns_server1 }}'
+#          - '{{ dns_server2 }}'
+#        tags:
+#          delete: on-exit
+#
+#    - name: Create outside subnet
+#      azure_rm_subnet:
+#        state: present
+#        name: '{{ cloud_tag }}_outside'
+#        virtual_network_name: '{{ cloud_tag }}'
+#        resource_group: '{{ cloud_tag }}'
+#        address_prefix_cidr: '{{ cloud_info["azure"].outside_cidr }}'
+#        security_group_name: '{{ cloud_tag }}'
+#
+#    - name: Create inside subnet
+#      azure_rm_subnet:
+#        state: present
+#        name: '{{ cloud_tag }}_inside'
+#        virtual_network_name: '{{ cloud_tag }}'
+#        resource_group: '{{ cloud_tag }}'
+#        address_prefix_cidr: '{{ cloud_info["azure"].inside_cidr }}'
