@@ -1,0 +1,27 @@
+---
+- hosts: ucso-tors
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ucso-vault.yml
+    - vlan-data.yml     
+  vars:
+    cli:
+      host: "{{ inventory_hostname }}"
+      username: "{{ admin_username }}"
+      password: "{{ admin_password }}"
+      transport: cli
+ 
+  tasks:
+    - debug: msg="vlan {{ item.id }} name {{ item.name }}"
+      with_items: "{{ vlan_data | default([]) }}"
+
+    - name: Creating vlans
+      nxos_vlan:
+        host: "{{ inventory_hostname }}"
+        username: "{{ admin_username }}"
+        password: "{{ admin_password }}"
+        transport: cli
+        vlan_id: "{{ item.id }}"
+        name: "{{ item.name }}"
+      with_items: "{{ vlan_data | default([]) }}"

@@ -1,0 +1,99 @@
+---
+- hosts: ucso-tors
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ucso-vault.yml
+  vars:
+    cli:
+      host: "{{ inventory_hostname }}"
+      username: "{{ admin_username }}"
+      password: "{{ admin_password }}"
+      transport: cli
+    vpc_member:
+      nexus-sw03-mgmt:
+        domain: 100
+        pkl_src: 10.12.15.147
+        pkl_dest: 10.12.15.148
+        system_priority: 4000
+        role_priority: 10
+        peer_gw: yes
+        peer_link_group: 1
+        peer_link_ports: ["Eth1/1","Eth1/2"]
+      nexus-sw04-mgmt:
+        domain: 100
+        pkl_src: 10.12.15.148
+        pkl_dest: 10.12.15.147
+        peer_gw: yes
+        peer_link_group: 1
+        peer_link_ports: ["Eth1/1","Eth1/2"]
+
+  tasks:
+  
+    - name: run show version on remote devices
+      nxos_command:
+        commands: show version | json
+        provider: "{{ cli }}"
+      register: result
+
+    - set_fact:
+        version: "{{ result.stdout[0] }}"
+
+    - debug: msg="Switch {{ inventory_hostname }} is a {{ version.chassis_id }} running {{ version.kickstart_ver_str }}"
+
+#  - name: Ensure vpc is enabled
+#    nxos_feature:
+#      feature: vpc
+#      state: enabled
+#      provider: "{{ cli }}"
+
+    - name: Configure the VPC
+      nxos_vpc:
+        domain: "{{ vpc_member[inventory_hostname].domain }}"
+        role_priority: "{{ vpc_member[inventory_hostname].role_priority | default(omit) }}"
+        system_priority: "{{ vpc_member[inventory_hostname].system_priority | default(omit) }}"
+        pkl_dest: "{{ vpc_member[inventory_hostname].pkl_dest }}"
+        pkl_src: "{{ vpc_member[inventory_hostname].pkl_src | default(ansible_host) }}"
+        pkl_vrf: "{{ vpc_member[inventory_hostname].pkl_vrf | default(omit) }}"
+        peer_gw: "{{ vpc_member[inventory_hostname].peer_gw | default(false) }}"
+        auto_recovery: "{{ vpc_member[inventory_hostname].auto_recovery | default(false) }}"
+        state: present
+        provider: "{{ cli }}"
+
+    - name: Configure indiviual port-channel interfaces
+      nxos_interface:
+        interface: "{{ item }}"
+        state: present
+        description: "VPC Peer Link"
+        mode: layer2
+        admin_state: up
+        provider: "{{ cli }}"
+      with_items:
+        - "{{ vpc_member[inventory_hostname].peer_link_ports }}"
+        
+    - name: Create port-channels on the ToR(s)
+      nxos_portchannel:
+        group: "{{ vpc_member[inventory_hostname].peer_link_group }}"
+        members: "{{ vpc_member[inventory_hostname].peer_link_ports }}"
+        mode: active
+        state: present
+        force: true
+        provider: "{{ cli }}"
+      register: command_result
+      
+#    - debug: var=command_result
+
+    - name: Configure the VPC Interface
+      nxos_vpc_interface:
+        portchannel: "{{ vpc_member[inventory_hostname].peer_link_group }}"
+        peer_link: true
+        provider: "{{ cli }}"
+    
+       
+
+      
+      
+
+      
+
+
